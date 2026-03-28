@@ -73,8 +73,6 @@ func SpawnProcess(id, socketPath, logPath string) (*exec.Cmd, error) {
 	cmd := exec.Command("firecracker",
 		"--id", id,
 		"--api-sock", socketPath,
-		"--log-path", logPath,
-		"--level", "Info",
 	)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
