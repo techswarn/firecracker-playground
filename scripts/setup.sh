@@ -12,6 +12,11 @@ BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; RESET='\033[0m'
 log() { echo -e "${CYAN}▶ $*${RESET}"; }
 ok()  { echo -e "${GREEN}✓ $*${RESET}"; }
 
+# Resolve project root (one level up from scripts/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEPLOY_DIR="/opt/firecracker-playground"
+
 # ─── Config ──────────────────────────────────────────────────────────────────
 FC_VERSION="v1.7.0"
 KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/vmlinux-5.10.204"
@@ -58,9 +63,17 @@ chown -R root:root "$INSTALL_DIR"
 chmod 755 "$INSTALL_DIR" "$DATA_DIR"
 ok "VM assets ready"
 
+# ─── Copy project to /opt ─────────────────────────────────────────────────────
+log "Copying project files to $DEPLOY_DIR..."
+if [ "$PROJECT_ROOT" != "$DEPLOY_DIR" ]; then
+  apt-get install -y -qq rsync
+  rsync -a --delete "$PROJECT_ROOT/" "$DEPLOY_DIR/"
+fi
+ok "Project at $DEPLOY_DIR"
+
 # ─── Backend ─────────────────────────────────────────────────────────────────
 log "Building Go backend..."
-cd /opt/firecracker-playground/backend
+cd "$DEPLOY_DIR/backend"
 go mod download
 go build -o /usr/local/bin/fc-playground .
 ok "Backend built"
@@ -89,7 +102,7 @@ ok "Backend service running"
 
 # ─── Frontend ────────────────────────────────────────────────────────────────
 log "Building React frontend..."
-cd /opt/firecracker-playground/frontend
+cd "$DEPLOY_DIR/frontend"
 npm install --silent
 npm run build --silent
 
@@ -99,7 +112,7 @@ server {
     listen $FRONTEND_PORT default_server;
     server_name _;
 
-    root /opt/firecracker-playground/frontend/dist;
+    root $DEPLOY_DIR/frontend/dist;
     index index.html;
 
     # SPA fallback
