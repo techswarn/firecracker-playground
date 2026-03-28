@@ -92,7 +92,6 @@ func (m *Manager) Create(req CreateRequest) (*VM, error) {
 	id := uuid.New().String()[:8]
 	socketPath := filepath.Join(m.dataDir, fmt.Sprintf("fc-%s.sock", id))
 	rootfsPath := filepath.Join(m.dataDir, fmt.Sprintf("rootfs-%s.ext4", id))
-	logPath := filepath.Join(m.dataDir, fmt.Sprintf("fc-%s.log", id))
 
 	v := &VM{
 		ID:         id,
@@ -133,7 +132,8 @@ func (m *Manager) boot(v *VM, req CreateRequest) error {
 	}
 
 	// Spawn firecracker process
-	process, err := SpawnProcess(v.socketPath, filepath.Join(m.dataDir, fmt.Sprintf("fc-%s.log", v.ID)))
+	logPath := filepath.Join(m.dataDir, fmt.Sprintf("fc-%s.log", v.ID))
+	process, err := SpawnProcess(v.socketPath, logPath)
 	if err != nil {
 		return err
 	}
