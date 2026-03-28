@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# setup.sh — Bootstrap Firecracker Playground on a DigitalOcean Droplet
+# Tested on: Ubuntu 22.04 (Premium Intel/AMD with KVM nested-virt enabled)
+#
+# REQUIREMENTS:
+#   - Droplet type: Premium Intel or Premium AMD (KVM required)
+#   - Enable nested virtualization in DO console or via API
+#   - At least 2 GB RAM recommended
+
+set -euo pipefail
+BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; RESET='\033[0m'
+log() { echo -e "${CYAN}▶ $*${RESET}"; }
+ok()  { echo -e "${GREEN}✓ $*${RESET}"; }
+
+# ─── Config ──────────────────────────────────────────────────────────────────
+FC_VERSION="v1.7.0"
+KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/vmlinux-5.10.204"
+ROOTFS_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/ubuntu-22.04.ext4"
+INSTALL_DIR="/opt/fc"
+DATA_DIR="$INSTALL_DIR/data"
+BACKEND_PORT=8080
+FRONTEND_PORT=80
+
+# ─── KVM check ───────────────────────────────────────────────────────────────
+log "Checking KVM support..."
+if [ ! -e /dev/kvm ]; then
+  echo "ERROR: /dev/kvm not found."
+  echo "Enable nested virtualization for this Droplet and re-run."
+  exit 1
+fi
+ok "KVM available"
+
+# ─── System packages ─────────────────────────────────────────────────────────
+log "Installing system packages..."
+apt-get update -qq
+apt-get install -y -qq curl wget nginx golang-go nodejs npm
+ok "Packages installed"
+
+# ─── Firecracker binary ──────────────────────────────────────────────────────
+log "Installing Firecracker $FC_VERSION..."
+FC_ARCH=$(uname -m)
+wget -q -O /tmp/firecracker.tgz \
+  "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-${FC_ARCH}.tgz"
+tar -xz -C /tmp -f /tmp/firecracker.tgz
+cp /tmp/release-${FC_VERSION}-${FC_ARCH}/firecracker-${FC_VERSION}-${FC_ARCH} /usr/local/bin/firecracker
+chmod +x /usr/local/bin/firecracker
+ok "Firecracker installed: $(firecracker --version)"
+
+# ─── VM assets ───────────────────────────────────────────────────────────────
+log "Creating directories and downloading VM assets..."
+mkdir -p "$INSTALL_DIR" "$DATA_DIR"
+
+[ -f "$INSTALL_DIR/vmlinux" ] || wget -q -O "$INSTALL_DIR/vmlinux" "$KERNEL_URL"
+[ -f "$INSTALL_DIR/rootfs.ext4" ] || wget -q -O "$INSTALL_DIR/rootfs.ext4" "$ROOTFS_URL"
+
+# Firecracker needs write access to rootfs copies in DATA_DIR
+chown -R root:root "$INSTALL_DIR"
+chmod 755 "$INSTALL_DIR" "$DATA_DIR"
+ok "VM assets ready"
+
+# ─── Backend ─────────────────────────────────────────────────────────────────
+log "Building Go backend..."
+cd /opt/firecracker-playground/backend
+go mod download
+go build -o /usr/local/bin/fc-playground .
+ok "Backend built"
+
+# systemd service
+cat > /etc/systemd/system/fc-playground.service <<EOF
+[Unit]
+Description=Firecracker Playground API
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/fc-playground
+Restart=always
+Environment=KERNEL_PATH=$INSTALL_DIR/vmlinux
+Environment=ROOTFS_PATH=$INSTALL_DIR/rootfs.ext4
+Environment=DATA_DIR=$DATA_DIR
+Environment=LISTEN_ADDR=:$BACKEND_PORT
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now fc-playground
+ok "Backend service running"
+
+# ─── Frontend ────────────────────────────────────────────────────────────────
+log "Building React frontend..."
+cd /opt/firecracker-playground/frontend
+npm install --silent
+npm run build --silent
+
+# Point Nginx to the built frontend and proxy /api to backend
+cat > /etc/nginx/sites-available/fc-playground <<EOF
+server {
+    listen $FRONTEND_PORT default_server;
+    server_name _;
+
+    root /opt/firecracker-playground/frontend/dist;
+    index index.html;
+
+    # SPA fallback
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+
+    # API proxy → Go backend
+    location /api/ {
+        proxy_pass http://127.0.0.1:$BACKEND_PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+}
+EOF
+
+ln -sf /etc/nginx/sites-available/fc-playground /etc/nginx/sites-enabled/fc-playground
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+systemctl restart nginx
+ok "Frontend served on port $FRONTEND_PORT"
+
+# ─── Done ────────────────────────────────────────────────────────────────────
+DROPLET_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address || echo "<your-droplet-ip>")
+echo ""
+echo -e "${BOLD}🔥 Firecracker Playground is live!${RESET}"
+echo -e "   UI  →  http://$DROPLET_IP"
+echo -e "   API →  http://$DROPLET_IP/api/vms"
+echo ""
+echo "Logs: journalctl -u fc-playground -f"
