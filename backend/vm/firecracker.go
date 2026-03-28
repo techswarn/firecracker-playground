@@ -1,8 +1,8 @@
 package vm
 
 import (
-	"bytes"
 	"context"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -55,31 +55,32 @@ func (fc *FirecrackerClient) put(path string, body any) error {
 	return nil
 }
 
-// SpawnProcess starts the firecracker binary for this VM and returns the process.
-func SpawnProcess(id, socketPath, logPath string) (*exec.Cmd, error) {
-	// Remove stale socket if exists
+// SpawnProcess starts the firecracker binary and returns the process + console pipes.
+func SpawnProcess(id, socketPath string) (*exec.Cmd, io.WriteCloser, io.ReadCloser, error) {
 	os.Remove(socketPath)
 
-	// Ensure /dev/kvm is accessible
 	if _, err := os.Stat("/dev/kvm"); err != nil {
-		return nil, fmt.Errorf("/dev/kvm not available: %w", err)
-	}
-
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("open log file: %w", err)
+		return nil, nil, nil, fmt.Errorf("/dev/kvm not available: %w", err)
 	}
 
 	cmd := exec.Command("firecracker",
 		"--id", id,
 		"--api-sock", socketPath,
 	)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+
+	// Serial console is on stdin/stdout — pipe them for WebSocket access
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+	cmd.Stderr = os.Stderr // firecracker errors → backend journal
 
 	if err := cmd.Start(); err != nil {
-		logFile.Close()
-		return nil, fmt.Errorf("failed to start firecracker: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to start firecracker: %w", err)
 	}
 
 	// Wait for socket to appear (up to 5 seconds)
@@ -90,18 +91,15 @@ func SpawnProcess(id, socketPath, logPath string) (*exec.Cmd, error) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if _, err := os.Stat(socketPath); err != nil {
-		// Collect log output to surface in the error
-		logFile.Close()
-		logs, _ := os.ReadFile(logPath)
 		cmd.Process.Kill()
-		return nil, fmt.Errorf("firecracker socket never appeared at %s\nlog: %s", socketPath, string(logs))
+		return nil, nil, nil, fmt.Errorf("firecracker socket never appeared at %s", socketPath)
 	}
-	return cmd, nil
+
+	return cmd, stdinPipe, stdoutPipe, nil
 }
 
 // ConfigureAndBoot applies machine config, boot source, rootfs, then starts the VM.
 func (fc *FirecrackerClient) ConfigureAndBoot(cfg CreateRequest, kernelPath, rootfsPath string) error {
-	// 1. Machine config
 	if err := fc.put("/machine-config", map[string]any{
 		"vcpu_count":   cfg.VCPUs,
 		"mem_size_mib": cfg.MemoryMiB,
@@ -109,7 +107,6 @@ func (fc *FirecrackerClient) ConfigureAndBoot(cfg CreateRequest, kernelPath, roo
 		return fmt.Errorf("machine-config: %w", err)
 	}
 
-	// 2. Boot source
 	if err := fc.put("/boot-source", map[string]any{
 		"kernel_image_path": kernelPath,
 		"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off",
@@ -117,7 +114,6 @@ func (fc *FirecrackerClient) ConfigureAndBoot(cfg CreateRequest, kernelPath, roo
 		return fmt.Errorf("boot-source: %w", err)
 	}
 
-	// 3. Root drive (copy rootfs so each VM is isolated)
 	if err := fc.put("/drives/rootfs", map[string]any{
 		"drive_id":       "rootfs",
 		"path_on_host":   rootfsPath,
@@ -127,7 +123,6 @@ func (fc *FirecrackerClient) ConfigureAndBoot(cfg CreateRequest, kernelPath, roo
 		return fmt.Errorf("drives/rootfs: %w", err)
 	}
 
-	// 4. Start the instance
 	if err := fc.put("/actions", map[string]any{
 		"action_type": "InstanceStart",
 	}); err != nil {

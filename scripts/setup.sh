@@ -19,8 +19,8 @@ DEPLOY_DIR="/opt/firecracker-playground"
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 FC_VERSION="v1.7.0"
-KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/vmlinux-5.10.204"
-ROOTFS_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.7/x86_64/ubuntu-22.04.ext4"
+KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin"
+ROOTFS_URL="https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/rootfs/bionic.rootfs.ext4"
 INSTALL_DIR="/opt/fc"
 DATA_DIR="$INSTALL_DIR/data"
 BACKEND_PORT=8080
@@ -34,6 +34,8 @@ if [ ! -e /dev/kvm ]; then
   exit 1
 fi
 ok "KVM available"
+# Ensure kvm is accessible by the service (root already has access, but be explicit)
+chmod o+rw /dev/kvm
 
 # ─── System packages ─────────────────────────────────────────────────────────
 log "Installing system packages..."
@@ -55,10 +57,12 @@ ok "Firecracker installed: $(firecracker --version)"
 log "Creating directories and downloading VM assets..."
 mkdir -p "$INSTALL_DIR" "$DATA_DIR"
 
-[ -f "$INSTALL_DIR/vmlinux" ] || wget -q -O "$INSTALL_DIR/vmlinux" "$KERNEL_URL"
-[ -f "$INSTALL_DIR/rootfs.ext4" ] || wget -q -O "$INSTALL_DIR/rootfs.ext4" "$ROOTFS_URL"
+wget -q --show-progress -O "$INSTALL_DIR/vmlinux" "$KERNEL_URL"
+wget -q --show-progress -O "$INSTALL_DIR/rootfs.ext4" "$ROOTFS_URL"
 
-# Firecracker needs write access to rootfs copies in DATA_DIR
+# Verify kernel is a valid ELF
+file "$INSTALL_DIR/vmlinux" | grep -q ELF || { echo "ERROR: kernel is not a valid ELF file"; exit 1; }
+
 chown -R root:root "$INSTALL_DIR"
 chmod 755 "$INSTALL_DIR" "$DATA_DIR"
 ok "VM assets ready"
@@ -74,7 +78,7 @@ ok "Project at $DEPLOY_DIR"
 # ─── Backend ─────────────────────────────────────────────────────────────────
 log "Building Go backend..."
 cd "$DEPLOY_DIR/backend"
-go mod download
+go mod tidy
 go build -o /usr/local/bin/fc-playground .
 ok "Backend built"
 
@@ -97,7 +101,8 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now fc-playground
+systemctl enable fc-playground
+systemctl restart fc-playground
 ok "Backend service running"
 
 # ─── Frontend ────────────────────────────────────────────────────────────────
@@ -120,11 +125,15 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
 
-    # API proxy → Go backend
+    # API proxy → Go backend (with WebSocket support for console)
     location /api/ {
         proxy_pass http://127.0.0.1:$BACKEND_PORT;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600;
     }
 }
 EOF

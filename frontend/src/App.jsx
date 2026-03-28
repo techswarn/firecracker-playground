@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import VMCard from './components/VMCard'
 import CreateVMModal from './components/CreateVMModal'
+import VMTerminal from './components/Terminal'
 
 const API = '/api'
 
@@ -22,6 +23,7 @@ export default function App() {
   const [showModal, setShowModal] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [consoleVMId, setConsoleVMId] = useState(null)
 
   const fetchVMs = useCallback(async () => {
     try {
@@ -121,7 +123,7 @@ export default function App() {
         ) : (
           <div style={styles.grid}>
             {sorted.map(vm => (
-              <VMCard key={vm.id} vm={vm} onDelete={deleteVM} />
+              <VMCard key={vm.id} vm={vm} onDelete={deleteVM} onOpenTerminal={setConsoleVMId} />
             ))}
           </div>
         )}
@@ -131,6 +133,13 @@ export default function App() {
         <CreateVMModal
           onClose={() => setShowModal(false)}
           onCreate={createVM}
+        />
+      )}
+
+      {consoleVMId && (
+        <VMTerminal
+          vmId={consoleVMId}
+          onClose={() => setConsoleVMId(null)}
         />
       )}
     </div>

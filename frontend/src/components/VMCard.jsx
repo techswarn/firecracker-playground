@@ -7,7 +7,7 @@ const STATUS_CONFIG = {
   error: { color: 'var(--red)', bg: 'var(--red-dim)', label: '✕ ERROR' },
 }
 
-export default function VMCard({ vm, onDelete }) {
+export default function VMCard({ vm, onDelete, onOpenTerminal }) {
   const [deleting, setDeleting] = useState(false)
   const st = STATUS_CONFIG[vm.status] || STATUS_CONFIG.stopped
 
@@ -45,6 +45,14 @@ export default function VMCard({ vm, onDelete }) {
       )}
 
       <div style={styles.footer}>
+        <button
+          style={{ ...styles.btn, ...styles.terminalBtn, opacity: vm.status !== 'running' ? 0.4 : 1 }}
+          onClick={() => vm.status === 'running' && onOpenTerminal(vm.id)}
+          disabled={vm.status !== 'running'}
+          title={vm.status !== 'running' ? 'VM must be running' : 'Open terminal'}
+        >
+          ⌨ TERMINAL
+        </button>
         <button
           style={{ ...styles.btn, ...styles.deleteBtn, opacity: deleting ? 0.5 : 1 }}
           onClick={handleDelete}
@@ -161,6 +169,10 @@ const styles = {
     fontWeight: 500,
     letterSpacing: '0.08em',
     transition: 'all 0.15s',
+  },
+  terminalBtn: {
+    borderColor: 'rgba(0,229,255,0.3)',
+    color: 'var(--accent)',
   },
   deleteBtn: {
     borderColor: 'rgba(255,77,109,0.3)',
