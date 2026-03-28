@@ -133,7 +133,7 @@ func (m *Manager) boot(v *VM, req CreateRequest) error {
 
 	// Spawn firecracker process
 	logPath := filepath.Join(m.dataDir, fmt.Sprintf("fc-%s.log", v.ID))
-	process, err := SpawnProcess(v.socketPath, logPath)
+	process, err := SpawnProcess(v.ID, v.socketPath, logPath)
 	if err != nil {
 		return err
 	}

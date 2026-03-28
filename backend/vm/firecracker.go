@@ -56,31 +56,47 @@ func (fc *FirecrackerClient) put(path string, body any) error {
 }
 
 // SpawnProcess starts the firecracker binary for this VM and returns the process.
-func SpawnProcess(socketPath, logPath string) (*exec.Cmd, error) {
+func SpawnProcess(id, socketPath, logPath string) (*exec.Cmd, error) {
 	// Remove stale socket if exists
 	os.Remove(socketPath)
 
+	// Ensure /dev/kvm is accessible
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		return nil, fmt.Errorf("/dev/kvm not available: %w", err)
+	}
+
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open log file: %w", err)
+	}
+
 	cmd := exec.Command("firecracker",
+		"--id", id,
 		"--api-sock", socketPath,
 		"--log-path", logPath,
 		"--level", "Info",
 	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
 	if err := cmd.Start(); err != nil {
+		logFile.Close()
 		return nil, fmt.Errorf("failed to start firecracker: %w", err)
 	}
 
-	// Wait for socket to appear (up to 3 seconds)
-	for i := 0; i < 30; i++ {
+	// Wait for socket to appear (up to 5 seconds)
+	for i := 0; i < 50; i++ {
 		if _, err := os.Stat(socketPath); err == nil {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	if _, err := os.Stat(socketPath); err != nil {
+		// Collect log output to surface in the error
+		logFile.Close()
+		logs, _ := os.ReadFile(logPath)
 		cmd.Process.Kill()
-		return nil, fmt.Errorf("firecracker socket never appeared at %s", socketPath)
+		return nil, fmt.Errorf("firecracker socket never appeared at %s\nlog: %s", socketPath, string(logs))
 	}
 	return cmd, nil
 }
